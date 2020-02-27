@@ -177,6 +177,37 @@ mapFix f = fix (\rec (x:xs) -> (f x: rec xs))
 --     --
 -- --- --
 
+-- 5.1
+{-
+distributivity (Left ("harold" ++ " hide " ++ "the " ++ "pain"))
+
+Для аргумента Left _ у нас фукнция определена как 
+distributivity (Left a) = (Left a, Left a)
+
+То есть, если я правильно понимаю, то самое внешнее выражение - конструктор пары (,), то есть
+(Left ("harold" ++ " hide " ++ "the " ++ "pain"), Left ("harold" ++ " hide " ++ "the " ++ "pain"))
+
+Для проверки в ghci попробовал ввести
+> x = distributivity (Left undefined)
+ошибки не вызвало, а значит и внутренности не вычисляются сразу
+-}
+
+-- 5.2
+{-
+
+foo :: Char -> Maybe Double
+foo char =
+  case char == 'o' of
+    True -> Just $ exp pi
+    False -> Nothing
+
+null $ mapMaybe foo "pole chudes ochen' chudesno"
+
+> x = null $ mapMaybe undefined undefined
+
+-}
+
+
 -- --- --
 --     --
 --  6  --
