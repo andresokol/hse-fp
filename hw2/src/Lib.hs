@@ -1,175 +1,168 @@
+{-# LANGUAGE Arrows #-}
+
 module Lib where
 
-import Data.Function
+import           Control.Arrow
+import           Control.Category
+import           Control.Monad
+import           Prelude          hiding (id, (.))
 
--- 1
+-- --- --
+--     --
+--  1  --
+--     --
+-- --- --
 
 -- 1.1
-{-
-((λ p. (λ q. ((q (p r)) s))) ((q ((λ p. p) r)) s))
-((λ p. (λ q. ((q (p r)) s))) ((q (r)) s))
-((λ p. (λ q. ((q (p r)) s))) ((q r) s))
-((λ p. (λ q. ((q (p r)) s))) (q r s))
-(λ p. (λ q. q (p r) s)) (q r s)
-(λ p. (λ Q. Q (p r) s)) (q r s)
-(λ P.λ Q. Q (P r) s) (q r s)
-(λ Q. Q ((q r s) r) s) 
-(λ Q. Q (q r s r) s)
-λ Q. Q (q r s r) s
--}
+newtype Reader r a = Reader { runReader :: r -> a }
+
+-- 1.1.1
+instance Functor (Reader r) where
+    fmap f x = Reader (\w -> f $ runReader x w)
+instance Applicative (Reader r) where
+    pure a = Reader $ \w -> a
+    Reader r <*> Reader d = Reader $ \w -> r w (d w)
+instance Monad (Reader r) where
+    m >>= k  = Reader $ \r -> runReader (k (runReader m r)) r
+
+-- 1.1.2
+
+ask :: Reader r r
+ask = Reader $ \w -> w
+
+local
+  :: (r -> r)
+  -> Reader r a
+  -> Reader r a
+local f a = Reader $ \w -> runReader a (f w)
 
 -- 1.2
-{-
-((λ a. λ b. (λ x. x) b a (a b x) ((λ a. (λ b. a)) x)) (λ b. b)) [x := b]
-((λ a. λ b. b a (a b x) ((λ a. (λ b. a)) x)) (λ b. b)) [x := b]
-((λ a. λ b. b a (a b x) ((λ a. (λ b. a)) x)) (λ b. b)) [x := b]
-((λ a. λ b. b a (a b x) ((λ a. (λ b. a)) x)) (λ Z. Z)) [x := b]
-((λ a. λ b. b a (a b x) (λ b. x)) (λ Z. Z)) [x := b]
-(λ b. b (λ Z. Z) ((λ Z. Z) b x) (λ b. x)) [x := b]
-(λ b. b (λ Z. Z) (b x) (λ b. x)) [x := b]
-(λ b. b (λ Z. Z) (b x) (λ Q. x)) [x := b]
-(λ b. b (λ Z. Z) (b x) (λ Q. x)) [x := b]
-(λ P. P (λ Z. Z) (P x) (λ Q. x)) [x := b]
-(λ P. P (λ Z. Z) (P b) (λ Q. b))
--}
+newtype Writer w a
+  = Writer { runWriter :: (a, w) }
 
--- 2.1 
-distributivity
-  :: Either a (b, c)
-  -> (Either a b, Either a c)
-distributivity (Left a) = (Left a, Left a)
-distributivity (Right (b, c)) = (Right b, Right c)
+-- 1.2.1
+instance Functor (Writer w) where
+    fmap f (Writer (a, w)) = Writer (f a, w)
+
+instance Monoid w => Applicative (Writer w) where
+    pure a = Writer (a, mempty)
+    Writer (a, w) <*> Writer (b, w') = Writer (a b, w `mappend` w')
+
+instance Monoid w => Monad (Writer w) where
+    return x = Writer (x, mempty)
+    Writer (a, w) >>= m = do
+      let (b, w') = runWriter (m a)
+      Writer (b, w `mappend` w')
+
+-- 1.2.2
+tell
+  :: Monoid w
+  => w
+  -> Writer w ()
+tell w = Writer ((), w)
+
+listen
+  :: Monoid w
+  => Writer w a
+  -> Writer w (w, a)
+listen (Writer (a, w)) = Writer ((w, a), w)
+
+pass
+  :: Monoid w
+  => Writer w (a, w -> w)
+  -> Writer w a
+pass (Writer ((a, f), w)) = Writer (a, f w)
+
+-- 1.3
+newtype State s a
+  = State { runState :: s -> (a, s) }
+
+-- 1.3.1
+get :: State s s
+get = State $ \w -> (w, w)
+
+put :: s -> State s ()
+put = \s -> State $ const ((), s)
+
+-- 1.3.2
+instance Functor (State s) where
+    fmap f a = State $ \s -> let (a', s') = runState a s 
+                             in (f a', s')
+
+instance Applicative (State s) where
+    pure a = State $ \s -> (a, s)
+    f <*> a = State $ \s -> let (a', s')  = runState a s
+                                (f', s'') = runState f s'
+                            in (f' a', s'')
+
+instance Monad (State s) where
+    m >>= k = State $ \s -> case runState m s of (m', s') -> runState (k m') s'
+
+-- --- --
+--     --
+--  2  --
+--     --
+-- --- --
+
+-- 2.1
+newtype SignalFunction a b = SF ((a, Double) -> (SignalFunction a b, b))
+
+instance Category SignalFunction where
+    id = SF $ \(i, _) -> (id, i)
+    SF f . SF g = SF $ \(i, t) -> let (sf_g, result_g) = g (i, t)
+                                      (sf_f, result_f) = f (result_g, t)
+                                  in (sf_f . sf_g, result_f)
+
+instance Arrow SignalFunction where
+    arr f = SF $ \(i, _) -> (arr f, f i)
+    first (SF f) = SF $ \((a, b), t) -> let (sf_f, result) = f (a, t)
+                                        in (first sf_f, (result, b))
 
 -- 2.2
-associator
-  :: (a, (b, c))
-  -> ((a, b), c)
-associator (a, (b, c)) = ((a, b), c)
+integral :: SignalFunction Double Double
+integral = iter 0.0 0.0
+    where
+        iter :: Double -> Double -> SignalFunction Double Double
+        iter acc l = SF $ \(r, t) -> let acc' = (l + r) * t / 2 + acc
+                                      in (iter acc' r, acc')
 
--- 2.3 FIXME
--- type (<->) a b = (a -> b, b -> a)
+-- 2.3
+someFunction :: SignalFunction (Double, Double) (Double, Double)
+someFunction = proc (x, y) -> do
+    x2  <- arr (*2) -< x
+    y3  <- arr (*3) -< y
+    res <- arr (uncurry (+)) -< (x2, y3)
 
--- eitherAssoc
---   :: Either a (Either b c)
---   <-> Either (Either a b) c
--- eitherAssoc (Left a) = Left (Left a)
--- eitherAssoc (Right (Left b)) = Left (Right b)
--- eitherAssoc (Right (Right c)) = Right c
+    i <- integral -< res
+    returnA -< (i, res)
 
--- 2.4
-pairProd
-  :: (a -> b)
-  -> (c -> d)
-  -> (a,c)
-  -> (b,d)
-pairProd f g (x, y) = (f x, g y)
-
--- 2.5
-weirdFunction
-  :: (d -> d -> b)
-  -> (a -> b -> c)
-  -> (d -> b)
-  -> d -> b
--- weirdFunction _ _ f d = f d
-weirdFunction f _ _ d = f d d
-
--- 2.6
-eitherAssoc
-  :: Either a (Either b c)
-  -> Either (Either a b) c
-eitherAssoc (Left a) = Left (Left a)
-eitherAssoc (Right (Left b)) = Left (Right b)
-eitherAssoc (Right (Right c)) = Right c
-
--- 2.7
-distr
-  :: (a -> b -> c)
-  -> (a -> b)
-  -> a -> c
-distr f g a = f a (g a)
-
--- --- -- 
---     -- 
---  3  -- 
---     -- 
+-- --- --
+--     --
+--  3  --
+--     --
 -- --- --
 
-data Nat = Zero | Succ Nat
-
--- 3.1
-toInt :: Nat -> Int
-toInt Zero = 0
-toInt (Succ prev) = toInt prev + 1
-
-instance Show Nat where
-  show Zero = "0"
-  show x = show $ toInt x
-
--- 3.2
-instance Eq Nat where
-  Zero == Zero     = True
-  _    == Zero     = False
-  Zero == _        = False
-  Succ x == Succ y = x == y
-
--- 3.3
-instance Ord Nat where
-  compare Zero Zero         = EQ
-  compare _ Zero            = GT
-  compare Zero _            = LT
-  compare (Succ x) (Succ y) = compare x y
-
--- 3.4
-instance Num Nat where
-  (+) x Zero     = x
-  (+) x (Succ y) = Succ x + y
-
-  (*) Zero _ = Zero
-  (*) _ Zero = Zero
-  (*) x (Succ Zero) = x
-  (*) x (Succ y)    = x * y + x
-
-  (-) Zero y            = error "Natural numbers are nonnegative"
-  (-) x Zero            = x
-  (-) (Succ x) (Succ y) = x - y
-
-  abs x = x
-  signum Zero = 0
-  signum _    = 1
-
-  fromInteger x
-      | x == 0 = Zero
-      | x > 0  = Succ $ fromInteger (x - 1)
-      | otherwise = error "Natural numbers are nonnegative" 
-
--- 3.5
-instance Enum Nat where
-  toEnum   = undefined
-  fromEnum = undefined
-
-
--- --- -- 
---     -- 
---  4  -- 
---     -- 
+-- --- --
+--     --
+--  4  --
+--     --
 -- --- --
 
-iterateElement :: a -> [a]
-iterateElement x = fix (x:)
+newtype MyCont r a
+  = MyCont { runCont :: (a -> r) -> r }
 
-fibonacci :: Integer -> Integer
-fibonacci = fix (\rec x -> case x of
-    0 -> 0
-    1 -> 1
-    _ -> rec (x-1) + rec (x-2)
-    )
+-- 4.1
+instance Functor (MyCont r) where
+    fmap f a = MyCont $ \r -> runCont a $ r . f
 
-factorial :: Integer -> Integer
-factorial = fix (\rec x -> if x == 0 then 1 else x * rec (x - 1))
+-- 4.2
+instance Applicative (MyCont r) where
+    pure a = MyCont $ \r -> r a
+    f <*> a = MyCont $ \r -> runCont f $ \r' -> runCont a $ r . r'
 
-mapFix :: (a -> b) -> [a] -> [b]
-mapFix f = fix (\rec (x:xs) -> (f x: rec xs))
-
+-- 4.3
+instance Monad (MyCont r) where
+    a >>= f = MyCont $ \r -> runCont a $ \r' -> runCont (f r') r
 
 -- --- --
 --     --
@@ -177,194 +170,28 @@ mapFix f = fix (\rec (x:xs) -> (f x: rec xs))
 --     --
 -- --- --
 
+class MonadTrans n where
+  lift :: Monad m => m a -> n m a
+
 -- 5.1
-{-
-distributivity (Left ("harold" ++ " hide " ++ "the " ++ "pain"))
+newtype MaybeT m a
+  = MaybeT { runMaybeT :: m (Maybe a) }
 
-Для аргумента Left _ у нас фукнция определена как 
-distributivity (Left a) = (Left a, Left a)
-
-То есть, если я правильно понимаю, то самое внешнее выражение - конструктор пары (,), то есть
-(Left ("harold" ++ " hide " ++ "the " ++ "pain"), Left ("harold" ++ " hide " ++ "the " ++ "pain"))
-
-Для проверки в ghci попробовал ввести
-> x = distributivity (Left undefined)
-ошибки не вызвало, а значит и внутренности не вычисляются сразу
--}
+instance MonadTrans MaybeT where
+    lift m = MaybeT $ fmap return m
 
 -- 5.2
-{-
+newtype ContT r m a
+  = ContT { runContT :: (a -> m r) -> m r }
 
-foo :: Char -> Maybe Double
-foo char =
-  case char == 'o' of
-    True -> Just $ exp pi
-    False -> Nothing
+instance MonadTrans (ContT r) where
+    lift m = ContT (m >>=)
 
-null $ mapMaybe foo "pole chudes ochen' chudesno"
+-- 5.3
+newtype StateT s m a
+  = StateT { runStateT :: s -> m (a, s) }
 
-> x = null $ mapMaybe undefined undefined
-
--}
-
-
--- --- --
---     --
---  6  --
---     --
--- --- --
-
-type NatChurch a = (a -> a) -> a -> a
-
-zero :: NatChurch a
-zero f x = x
-
--- 6.1
-succChurch :: NatChurch a -> NatChurch a
-succChurch n f x = f (n f x)
-
--- 6.2
-churchPlus :: NatChurch a -> NatChurch a -> NatChurch a
-churchPlus n m f x = m f (n f x)
-
--- 6.3
-churchMult :: NatChurch a -> NatChurch a -> NatChurch a
-churchMult n m f = m (n f)
-
--- 6.4
-churchToInt :: NatChurch Integer -> Integer
-churchToInt f = f ( (+) 1 ) 0
-
--- --- --
---     --
---  7  --
---     --
--- --- --
-
--- --- --
---     --
---  8  --
---     --
--- --- --
-
-data Tree a = Leaf | Node (Tree a) a (Tree a)
-
--- 8.1
-instance Show a => Show (Tree a) where
-  show Leaf = "_"
-  show (Node l a r) = "(" ++ (show l) ++ (show a) ++ (show r) ++ ")"
-
--- 8.2
-instance Eq a => Eq (Tree a) where
-  Leaf == Leaf = True
-  Leaf == _ = False
-  _ == Leaf = False
-  (Node l1 x1 r1) == (Node l2 x2 r2) = (l1 == l2) && (x1 == x2) && (r1 == r2)
-
--- 8.3
-treeToList :: Tree a -> [a]
-treeToList Leaf = []
-treeToList (Node left x right) = (treeToList left) ++ [x] ++ (treeToList right)
-
--- 8.4
-isEmpty :: Tree a -> Bool
-isEmpty Leaf = True
-isEmpty _ = False
-
--- 8.5
-nodesNum :: Tree a -> Int
-nodesNum Leaf = 0
-nodesNum (Node left x right) = (nodesNum left) + 1 + (nodesNum right)
-
--- --- --
---     --
---  9  --
---     --
--- --- --
-
--- 9.1
-smartReplicate [] = []
-smartReplicate (x:xs) = 
-    let f x' cnt xs' = if cnt == 0 then smartReplicate xs' else x':(f x' (cnt - 1) xs')
-    in f x x xs
-
--- 9.2
-containsSingle _ [] = False
-containsSingle a (x:xs) = if x == a then True else containsSingle a xs
-
-contains _ [] = []
-contains a (x:xs) = if containsSingle a x then x:contains a xs else contains a xs
-
--- 9.3
-stringSum s = foldl (\acc y -> acc + (read y :: Integer)) 0 $ words s 
-
--- 9.4
-merge ([], x) = x
-merge (x, []) = x
-merge (x:xs, y:ys) = if x < y then x:merge (xs, y:ys) else y:merge (x:xs, ys)
-
-split [] = ([], [])
-split [a] = ([a], [])
-split (x:y:latter) = (\(as, bs) a b -> (a:as, b:bs)) (split latter) x y
-
-mergeSort [] = []
-mergeSort [a] = [a]
-mergeSort x = merge $ (\(a, b) -> (mergeSort a, mergeSort b)) $ split x
-
-
--- ---- -- 
---      -- 
---  10  -- 
---      -- 
--- ---- --
-
--- 10.1
-data Colour = Red | Blue | Purple | Green
-  deriving Show
-
-stringToColour :: String -> Colour
-stringToColour "Red"    = Red
-stringToColour "Blue"   = Blue
-stringToColour "Purple" = Purple
-stringToColour "Green"  = Green
-
--- 10.2
-data LogLevel = Error | Warning | Info
-  deriving Show
-
-instance Eq LogLevel where
-    Error == Error = True
-    Warning == Warning = True
-    Info == Info = True
-    _ == _ = False
-
-instance Ord LogLevel where
-  compare Error Error = EQ
-  compare Error _     = GT
-  compare _ Error     = LT
-
-  compare Warning Warning = EQ
-
-  compare Info Info = EQ
-  compare Info _    = LT
-  compare _ Info    = GT
-
--- 10.3
-data Sex = Male | Female
-  deriving (Show, Eq)
-
-data Person
-  = Person
-  { firstName :: String
-  , lastName  :: String
-  , age :: Int
-  , sex :: Sex
-  }
-
-updateLastName
-  :: Person
-  -> Person
-  -> Person
-updateLastName (Person _ ln_p1 _ sex_p1) (Person fn_p2 _ age_p2 _)
-    = Person fn_p2 ln_p1 age_p2 sex_p1 
-
+instance MonadTrans (StateT s) where
+    lift ma = StateT $ \s -> do
+        a <- ma
+        return (a, s)

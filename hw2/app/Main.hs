@@ -1,7 +1,6 @@
 module Main where
 
-import Lib
-import Data.Function
+import           Lib
 
 main :: IO ()
 main = print 10
